@@ -14,7 +14,8 @@ int APPLY_SPECIFIC(factor)(PyArrayObject* input0, PyArrayObject* input1,
   if (success) return 1;
   if (CELERITE_J != Eigen::Dynamic && J != CELERITE_J) {
     PyErr_Format(PyExc_ValueError,
-                 "runtime value of J does not match compiled value");
+                 "runtime value of J (%d) does not match compiled value (%d)", \ 
+                 J, CELERITE_J);
     return 1;
   }
 

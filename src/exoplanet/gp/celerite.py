@@ -48,7 +48,7 @@ class GP:
 
     __citations__ = ("celerite",)
 
-    def __init__(self, kernel, x, diag, J=-1, model=None, Q=[[1]]):
+    def __init__(self, kernel, x, diag, J=-1, model=None):
         add_citations_to_model(self.__citations__, model=model)
 
         self.kernel = kernel
@@ -56,19 +56,20 @@ class GP:
             J = self.kernel.J
             if J > 32:
                 J = -1
-        self.J = J*np.shape(Q)[0]
+        self.J = J
 
         self.z = None
         self.x = tt.as_tensor_variable(x)
-        self.Q = tt.as_tensor_variable(Q)
         self.diag = tt.as_tensor_variable(diag)
         self.a, self.U, self.V, self.P = self.kernel.get_celerite_matrices(
-            self.x, self.diag, self.Q
+            self.x, self.diag
         )
         self.factor_op = FactorOp(J=self.J)
         self.d, self.W, _, self.flag = self.factor_op(
             self.a, self.U, self.V, self.P
         )
+        make_contiguous = tt.extra_ops.CpuContiguous()
+        self.P = make_contiguous(self.P)
         self.log_det = tt.sum(tt.log(self.d))
         self.norm = 0.5 * (self.log_det + self.x.size * np.log(2 * np.pi))
 
@@ -106,6 +107,14 @@ class GP:
 
     def apply_inverse(self, rhs):
         return self.general_solve_op(self.U, self.P, self.d, self.W, rhs)[0]
+    
+    def apply_inverse_vector(self, rhs):
+        rhs = tt.as_tensor_variable(rhs)
+        return self.vector_solve_op(self.U, 
+                                    self.P, 
+                                    self.d, 
+                                    self.W, 
+                                    tt.reshape(rhs, (rhs.size, 1)))[0]
 
     def predict(
         self,
@@ -143,7 +152,7 @@ class GP:
         if mu is None:
             if _fast_mean:
                 U_star, V_star, inds = kernel.get_conditional_mean_matrices(
-                    self.x, t
+                    self.x, t, self.Q
                 )
                 mu = self.conditional_mean_op(
                     self.U, self.V, self.P, self.z, U_star, V_star, inds
