@@ -81,7 +81,7 @@ class GP:
 
     def condition(self, y):
         self.y = y
-        z, _, _ = self.vector_solve_op(
+        z, _, _ = self.general_solve_op(
             self.U,
             self.P,
             self.d,
@@ -110,7 +110,7 @@ class GP:
     
     def apply_inverse_vector(self, rhs):
         rhs = tt.as_tensor_variable(rhs)
-        return self.vector_solve_op(self.U, 
+        return self.general_solve_op(self.U, 
                                     self.P, 
                                     self.d, 
                                     self.W, 

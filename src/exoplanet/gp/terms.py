@@ -675,6 +675,7 @@ class KroneckerTerm(Term):
         diag = tt.as_tensor_variable(diag)
         ar, cr, ac, bc, cc, dc = self.term.coefficients
         a = diag + tt.diag(self.Q)[:, None]*(tt.sum(ar) + tt.sum(ac))
+        a = tt.reshape(a.T, (1, a.size))[0]
         U = tt.concatenate(
             (
                 ar[None, :] + tt.zeros_like(x)[:, None],
