@@ -652,15 +652,27 @@ class Matern32Term(Term):
         )
     
 class KroneckerTerm(Term):
-    def __init__(self, term, Q, **kwargs):
+    def __init__(self, term, R, **kwargs):
         self.term = term
-        self.m = np.shape(Q)[0]
-        self.Q = tt.as_tensor_variable(Q)
+        self.R = tt.as_tensor_variable(R)
         super(KroneckerTerm, self).__init__(**kwargs)
         
     @property
     def J(self):
-        return self.term.J*self.m
+        try:
+            func = theano.function(
+                [], [self.R.shape[0]]
+            )
+            m = func()
+        except MissingInputError:
+            try:
+                m = eval_in_model(
+                    [self.R.shape[0]]
+                )
+            except (MissingInputError, TypeError):
+                return -1
+        m = np.atleast_1d(m)
+        return self.term.J*m[0]
     
     def __add__(self, b):
         dtype = theano.scalar.upcast(self.dtype, b.dtype)
@@ -672,9 +684,8 @@ class KroneckerTerm(Term):
         
     def get_celerite_matrices(self, x, diag):
         x = tt.as_tensor_variable(x)
-        diag = tt.as_tensor_variable(diag)
         ar, cr, ac, bc, cc, dc = self.term.coefficients
-        a = diag + tt.diag(self.Q)[:, None]*(tt.sum(ar) + tt.sum(ac))
+        a = diag + tt.diag(self.R)[:, None]*(tt.sum(ar) + tt.sum(ac))
         a = tt.reshape(a.T, (1, a.size))[0]
         U = tt.concatenate(
             (
@@ -686,7 +697,7 @@ class KroneckerTerm(Term):
             ),
             axis=1,
         )
-        U = tt.slinalg.kron(U, self.Q)
+        U = tt.slinalg.kron(U, self.R)
 
         V = tt.concatenate(
             (
@@ -696,28 +707,60 @@ class KroneckerTerm(Term):
             ),
             axis=1,
         )
-        V = tt.slinalg.kron(V, tt.eye(self.Q.shape[0]))
+        V = tt.slinalg.kron(V, tt.eye(self.R.shape[0]))
 
-        x = tt.reshape(tt.tile(x, (self.Q.shape[0], 1)).T, (1, x.size*self.Q.shape[0]))[0]
+        x = tt.reshape(tt.tile(x, (self.R.shape[0], 1)).T, (1, x.size*self.R.shape[0]))[0]
         dx = x[1:] - x[:-1]
         c = tt.concatenate((cr, cc, cc))
         P = tt.exp(-c[None, :] * dx[:, None])
-        P = tt.tile(P, (1, self.Q.shape[0]))
+        P = tt.tile(P, (1, self.R.shape[0]))
 
         return a, U, V, P
     
-class KroneckerTermSum():
+    def psd(self, omega):
+        ar, cr, ac, bc, cc, dc = self.term.coefficients
+        omega = tt.reshape(
+            omega, tt.concatenate([omega.shape, [1]]), ndim=omega.ndim + 1
+        )
+        w2 = omega ** 2
+        w02 = cc ** 2 + dc ** 2
+        power = tt.sum(ar * cr / (cr ** 2 + w2), axis=-1)
+        power += tt.sum(
+            ((ac * cc + bc * dc) * w02 + (ac * cc - bc * dc) * w2)
+            / (w2 * w2 + 2.0 * (cc ** 2 - dc ** 2) * w2 + w02 * w02),
+            axis=-1,
+        )
+        psd = np.sqrt(2.0 / np.pi) * power
+        return psd[:, None] * tt.diag(self.R)
+    
+class KroneckerTermSum(Term):
     def __init__(self, *terms, **kwargs):
         self.terms = terms
+        #if not all(term.R.size == terms[0].R.size for term in terms):
+        #    raise ValueError(
+        #        "R must have the same size for each term in the sum."
+        #        "terms[0].R.size = {0}, terms[1].R.size = {1}".format(terms[0].R.size, terms[1].R.size)
+        #    )
+        super(KroneckerTermSum, self).__init__(**kwargs)
         
     @property
     def J(self):
         return sum(term.J for term in self.terms)
     
+    def __add__(self, b):
+        dtype = theano.scalar.upcast(self.dtype, b.dtype)
+        return KroneckerTermSum(*self.terms, b, dtype=dtype)
+
+    def __radd__(self, b):
+        dtype = theano.scalar.upcast(self.dtype, b.dtype)
+        return KroneckerTermSum(b, *self.terms, dtype=dtype)
+    
     def get_celerite_matrices(self, x, diag):
-        a, U, V, P = self.terms[0].get_celerite_matrices(x, tt.zeros_like(x))
+        x = tt.as_tensor_variable(x)
+        diag = tt.reshape(diag.T, (1, diag.size))[0]
+        a, U, V, P = self.terms[0].get_celerite_matrices(x, tt.zeros((self.terms[0].R.shape[0], x.size)))
         for term in self.terms[1:]:
-            newa, newU, newV, newP = term.get_celerite_matrices(x, tt.zeros_like(x))
+            newa, newU, newV, newP = term.get_celerite_matrices(x, tt.zeros((term.R.shape[0], x.size)))
             a = tt.sum((newa, a), axis=0)
             U = tt.concatenate((U, newU), axis=1)
             V = tt.concatenate((V, newV), axis=1)
@@ -726,6 +769,23 @@ class KroneckerTermSum():
         a = tt.reshape(a.T, (1, a.size))[0]
         return a, U, V, P
         
+        #x = tt.as_tensor_variable(x)
+        #diag = tt.as_tensor_variable(diag)
+        #diag = tt.reshape(diag.T, (1, diag.size))[0]
+        #matrices = np.array([term.get_celerite_matrices(x, tt.zeros((term.R.shape[0], x.size))) 
+        #                     for term in self.terms]).T
+        #a, U, V, P = matrices
+        #a = tt.sum(list(a), axis=0)
+        #U = tt.concatenate(list(U), axis=1)
+        #V = tt.concatenate(list(V), axis=1)
+        #P = tt.concatenate(list(P), axis=1)
+        #a = diag + a
+        #a = tt.reshape(a.T, (1, a.size))[0]
+        #return a, U, V, P
+    
+    def psd(self, omega):
+        power = [term.psd(omega) for term in self.terms]
+        return tt.sum(power, axis=0)
 
 class RotationTerm(TermSum):
     r"""A mixture of two SHO terms that can be used to model stellar rotation
